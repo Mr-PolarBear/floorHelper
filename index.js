@@ -1,9 +1,10 @@
-import { saveSettingsDebounced } from '../../../../script.js';
+import { saveSettings, saveSettingsDebounced } from '../../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 
-// 扩展唯一标识与设置键
+// 扩展唯一标识与持久化键
 const EXTENSION_NAME = 'third-party/SillyTavern-FloorNav';
 const SETTINGS_KEY = 'floorNav';
+const LOCAL_STORAGE_KEY = 'st_floornav_settings';
 
 // 默认配置
 const defaultSettings = {
@@ -14,6 +15,9 @@ const defaultSettings = {
     enableJump: true,
     previewLength: 20,
 };
+
+// 内存中激活的配置
+let activeSettings = { ...defaultSettings };
 
 // 运行时状态
 let isPanelOpen = false;
@@ -28,15 +32,64 @@ function getStContext() {
 }
 
 /**
- * 获取插件配置并合并默认值
+ * 从 localStorage 读取本地持久化配置
+ * @returns {object|null}
+ */
+function readLocalStorageSettings() {
+    try {
+        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (raw) {
+            return JSON.parse(raw);
+        }
+    } catch (e) {
+        console.warn(`[${EXTENSION_NAME}] 读取本地设置失败:`, e);
+    }
+    return null;
+}
+
+/**
+ * 写入本地 localStorage 持久化存储
+ * @param {object} settings 
+ */
+function writeLocalStorageSettings(settings) {
+    try {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(settings));
+    } catch (e) {
+        console.warn(`[${EXTENSION_NAME}] 写入本地设置失败:`, e);
+    }
+}
+
+/**
+ * 获取并深度合并配置（优先级：localStorage > extension_settings > defaultSettings）
  */
 function getSettings() {
-    if (!extension_settings[SETTINGS_KEY]) {
-        extension_settings[SETTINGS_KEY] = { ...defaultSettings };
+    const local = readLocalStorageSettings();
+    const server = extension_settings[SETTINGS_KEY];
+
+    activeSettings = Object.assign({}, defaultSettings, server || {}, local || {});
+
+    // 同步回全局 extension_settings，保证随系统一同备份
+    extension_settings[SETTINGS_KEY] = activeSettings;
+    return activeSettings;
+}
+
+/**
+ * 保存配置（同时写入 localStorage、extension_settings 并同步到服务端）
+ * @param {boolean} immediate 是否立即强制写入服务端（不走防抖）
+ */
+function persistSettings(immediate = false) {
+    // 1. 同步写入 localStorage（0ms，保证刷新绝对不丢）
+    writeLocalStorageSettings(activeSettings);
+
+    // 2. 写入全局 extension_settings
+    extension_settings[SETTINGS_KEY] = activeSettings;
+
+    // 3. 提交给 SillyTavern 后端存储
+    if (immediate) {
+        saveSettings();
     } else {
-        extension_settings[SETTINGS_KEY] = Object.assign({}, defaultSettings, extension_settings[SETTINGS_KEY]);
+        saveSettingsDebounced();
     }
-    return extension_settings[SETTINGS_KEY];
 }
 
 /**
@@ -56,12 +109,26 @@ function applyGlobalCollapseHeight(height) {
  */
 function getRealMessageContentHeight(mesElement, mesText) {
     if (!mesElement.classList.contains('st-floor-collapsed')) {
-        return mesText.scrollHeight;
+        return Math.max(mesText.scrollHeight, mesText.offsetHeight);
     }
-    // 临时在微任务间隙解除截断限制并获取高度，无屏幕重绘闪烁
-    mesElement.classList.remove('st-floor-collapsed');
+
+    // 若消息已折叠，测量其子内容的实际累积高度
+    let totalChildrenHeight = 0;
+    Array.from(mesText.children).forEach(child => {
+        if (child instanceof HTMLElement) {
+            totalChildrenHeight += child.offsetHeight + parseInt(window.getComputedStyle(child).marginBottom || '0', 10);
+        }
+    });
+
+    if (totalChildrenHeight > 0) {
+        return totalChildrenHeight;
+    }
+
+    // 备用方案：临时测量真实高度
+    const originalMaxHeight = mesText.style.maxHeight;
+    mesText.style.maxHeight = 'none';
     const realHeight = mesText.scrollHeight;
-    mesElement.classList.add('st-floor-collapsed');
+    mesText.style.maxHeight = originalMaxHeight;
     return realHeight;
 }
 
@@ -174,13 +241,16 @@ function updateMessageCollapse(mesElement, shouldAutoCollapse = false, forceReca
         collapseRow.style.display = 'flex';
     }
 
-    // 自动收起逻辑：
+    // 自动收起逻辑
     if (settings.autoCollapse) {
         if (shouldAutoCollapse) {
-            // 符合自动收起条件：如果用户没有明确手动展开过此楼层，或者属于强制重新计算
+            // 符合自动收起条件：如果强制重算或用户没有明确手动展开过
             if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-user-action') !== 'expanded') {
                 mesElement.classList.add('st-floor-collapsed');
                 mesElement.setAttribute('data-st-collapsed-by', 'auto');
+                if (forceRecalculateAutoCollapse) {
+                    mesElement.removeAttribute('data-user-action');
+                }
             }
         } else {
             // 如果不符合自动收起条件（例如它处于最新楼层 < N 的保护范围内）
@@ -254,10 +324,16 @@ function refreshAllCollapses(forceRecalculateAutoCollapse = false) {
     const chatContainer = document.querySelector('#chat');
     if (!chatContainer) return;
 
-    const messages = Array.from(chatContainer.querySelectorAll('.mes'));
+    // 筛选可见的有效楼层（排除系统隐藏节点）
+    const messages = Array.from(chatContainer.querySelectorAll('.mes')).filter(el => {
+        return el.style.display !== 'none';
+    });
+
     const total = messages.length;
     const settings = getSettings();
     const fromN = Math.max(1, Number(settings.autoCollapseFromN) || 2);
+
+    let collapsedCount = 0;
 
     messages.forEach((mes, index) => {
         // 该楼层处于倒数第几位（最新一条为倒数第 1）
@@ -266,7 +342,13 @@ function refreshAllCollapses(forceRecalculateAutoCollapse = false) {
         const shouldAutoCollapse = settings.autoCollapse && (fromEndIndex >= fromN);
 
         updateMessageCollapse(mes, shouldAutoCollapse, forceRecalculateAutoCollapse);
+
+        if (mes.classList.contains('st-floor-collapsed')) {
+            collapsedCount++;
+        }
     });
+
+    console.log(`[${EXTENSION_NAME}] 刷新楼层: 共 ${total} 楼, 自动收起: ${settings.autoCollapse ? '开启(>=倒数' + fromN + ')' : '关闭'}, 已收起: ${collapsedCount} 楼, 阈值: ${settings.collapseHeight}px`);
 
     updateNavTriggerCount();
 }
@@ -636,7 +718,7 @@ function setupObservers() {
         if (hasRelevantChange) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-                refreshAllCollapses();
+                refreshAllCollapses(false);
                 if (isPanelOpen) renderFloorList();
             }, 180);
         }
@@ -659,10 +741,35 @@ function setupObservers() {
                 const fromN = Math.max(1, Number(settings.autoCollapseFromN) || 2);
                 const fromEndIndex = total - index;
                 const shouldAutoCollapse = settings.autoCollapse && (fromEndIndex >= fromN);
-                updateMessageCollapse(mes, shouldAutoCollapse);
+                updateMessageCollapse(mes, shouldAutoCollapse, false);
             }
         }
     }, true);
+}
+
+/**
+ * 同步当前设置对象到 HTML 控件中
+ */
+function syncSettingsToUI() {
+    const settings = getSettings();
+
+    $('#st_floor_enable_collapse').prop('checked', settings.enableCollapse);
+    $('#st_floor_collapse_height').val(settings.collapseHeight);
+    $('#st_floor_collapse_height_value').text(`${settings.collapseHeight}px`);
+    $('#st_floor_auto_collapse').prop('checked', settings.autoCollapse);
+    $('#st_floor_auto_n').val(settings.autoCollapseFromN ?? 2);
+    $('#st_floor_enable_jump').prop('checked', settings.enableJump);
+    $('#st_floor_preview_len').val(settings.previewLength);
+    $('#st_floor_preview_len_value').text(`${settings.previewLength}字`);
+
+    const block = $('#st_floor_auto_n_block');
+    if (settings.autoCollapse) {
+        block.css({ opacity: '1', 'pointer-events': 'auto' });
+    } else {
+        block.css({ opacity: '0.4', 'pointer-events': 'none' });
+    }
+
+    applyGlobalCollapseHeight(settings.collapseHeight);
 }
 
 /**
@@ -677,89 +784,79 @@ async function setupSettings() {
             targetContainer.append(settingsHtml);
         }
 
-        const settings = getSettings();
-
-        // 1. 同步初始高度到 CSS 变量
-        applyGlobalCollapseHeight(settings.collapseHeight);
+        // 1. 同步初始值到 UI
+        syncSettingsToUI();
 
         // 2. 启用收起按钮
-        $('#st_floor_enable_collapse')
-            .prop('checked', settings.enableCollapse)
-            .on('change', function () {
-                settings.enableCollapse = $(this).prop('checked');
-                saveSettingsDebounced();
-                refreshAllCollapses(true);
-            });
+        $('#st_floor_enable_collapse').off('change').on('change', function () {
+            activeSettings.enableCollapse = $(this).prop('checked');
+            persistSettings(false);
+            refreshAllCollapses(true);
+        });
 
         // 3. 收起高度滑块（input 与 change 均实时响应，毫秒生效）
         const onHeightChange = function () {
             const val = Number($(this).val()) || 300;
             $('#st_floor_collapse_height_value').text(`${val}px`);
-            settings.collapseHeight = val;
+            activeSettings.collapseHeight = val;
             applyGlobalCollapseHeight(val);
             refreshAllCollapses(false);
-            saveSettingsDebounced();
+            persistSettings(false);
         };
 
         $('#st_floor_collapse_height')
-            .val(settings.collapseHeight)
+            .off('input change')
             .on('input', onHeightChange)
             .on('change', onHeightChange);
-        $('#st_floor_collapse_height_value').text(`${settings.collapseHeight}px`);
 
         // 4. 自动收起开关与倒数 N 楼联动
-        const updateAutoNVisibility = (enabled) => {
+        $('#st_floor_auto_collapse').off('change').on('change', function () {
+            activeSettings.autoCollapse = $(this).prop('checked');
             const block = $('#st_floor_auto_n_block');
-            if (enabled) {
+            if (activeSettings.autoCollapse) {
                 block.css({ opacity: '1', 'pointer-events': 'auto' });
             } else {
                 block.css({ opacity: '0.4', 'pointer-events': 'none' });
             }
-        };
-
-        $('#st_floor_auto_collapse')
-            .prop('checked', settings.autoCollapse)
-            .on('change', function () {
-                settings.autoCollapse = $(this).prop('checked');
-                updateAutoNVisibility(settings.autoCollapse);
-                saveSettingsDebounced();
-                // 勾选或取消勾选时，立即强制重算并即刻生效！
-                refreshAllCollapses(true);
-            });
-        updateAutoNVisibility(settings.autoCollapse);
+            persistSettings(false);
+            // 勾选或取消勾选时，立即强制重算历史长楼层并即刻生效！
+            refreshAllCollapses(true);
+        });
 
         // 5. 倒数 N 楼输入框（修改数值时立即强制重算生效）
-        $('#st_floor_auto_n')
-            .val(settings.autoCollapseFromN ?? 2)
-            .on('input change', function () {
-                let n = parseInt($(this).val(), 10);
-                if (isNaN(n) || n < 1) n = 1;
-                settings.autoCollapseFromN = n;
-                saveSettingsDebounced();
-                // 修改 N 时，立刻重新应用最新范围并即刻生效！
-                refreshAllCollapses(true);
-            });
+        $('#st_floor_auto_n').off('input change').on('input change', function () {
+            let n = parseInt($(this).val(), 10);
+            if (isNaN(n) || n < 1) n = 1;
+            activeSettings.autoCollapseFromN = n;
+            persistSettings(false);
+            refreshAllCollapses(true);
+        });
 
         // 6. 悬浮跳转按钮开关
-        $('#st_floor_enable_jump')
-            .prop('checked', settings.enableJump)
-            .on('change', function () {
-                settings.enableJump = $(this).prop('checked');
-                saveSettingsDebounced();
-                injectFloatingNavButton();
-            });
+        $('#st_floor_enable_jump').off('change').on('change', function () {
+            activeSettings.enableJump = $(this).prop('checked');
+            persistSettings(false);
+            injectFloatingNavButton();
+        });
 
         // 7. 预览字数滑块
-        $('#st_floor_preview_len')
-            .val(settings.previewLength)
-            .on('input change', function () {
-                const val = Number($(this).val()) || 20;
-                $('#st_floor_preview_len_value').text(`${val}字`);
-                settings.previewLength = val;
-                saveSettingsDebounced();
-                if (isPanelOpen) renderFloorList();
-            });
-        $('#st_floor_preview_len_value').text(`${settings.previewLength}字`);
+        $('#st_floor_preview_len').off('input change').on('input change', function () {
+            const val = Number($(this).val()) || 20;
+            $('#st_floor_preview_len_value').text(`${val}字`);
+            activeSettings.previewLength = val;
+            persistSettings(false);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 8. 显式保存按钮（给用户百分之百的掌控感与即刻确认）
+        $('#st_floor_save_btn').off('click').on('click', function (e) {
+            e.stopPropagation();
+            persistSettings(true);
+            refreshAllCollapses(true);
+            if (window.toastr) {
+                window.toastr.success('楼层导航与收起配置已保存并立即生效！');
+            }
+        });
 
     } catch (err) {
         console.error(`[${EXTENSION_NAME}] 加载 settings.html 失败:`, err);
@@ -775,6 +872,20 @@ function setupEventHooks() {
     const event_types = context.event_types;
 
     if (!eventSource || !event_types) return;
+
+    // 当服务端扩展设置加载完毕时，与本地设置合并并更新 UI
+    const onSettingsLoaded = () => {
+        getSettings();
+        syncSettingsToUI();
+        refreshAllCollapses(true);
+    };
+
+    if (event_types.EXTENSION_SETTINGS_LOADED) {
+        eventSource.on(event_types.EXTENSION_SETTINGS_LOADED, onSettingsLoaded);
+    }
+    if (event_types.SETTINGS_LOADED) {
+        eventSource.on(event_types.SETTINGS_LOADED, onSettingsLoaded);
+    }
 
     // 监控生成开始与结束状态
     if (event_types.GENERATION_STARTED) {
@@ -793,14 +904,14 @@ function setupEventHooks() {
                 isGenerating = false;
                 setTimeout(() => {
                     // 生成结束后，原本的倒数第1楼变成了倒数第2楼，触发自动收起检查
-                    refreshAllCollapses();
+                    refreshAllCollapses(false);
                     if (isPanelOpen) renderFloorList();
                 }, 200);
             });
         }
     });
 
-    // 切换聊天事件：清空用户手动展开状态并重新执行
+    // 切换聊天事件：重新全量扫描
     if (event_types.CHAT_CHANGED) {
         eventSource.on(event_types.CHAT_CHANGED, () => {
             setTimeout(() => {
@@ -824,7 +935,7 @@ function setupEventHooks() {
         if (eventType) {
             eventSource.on(eventType, () => {
                 setTimeout(() => {
-                    refreshAllCollapses();
+                    refreshAllCollapses(false);
                     if (isPanelOpen) renderFloorList();
                 }, 120);
             });
@@ -838,11 +949,11 @@ function setupEventHooks() {
 jQuery(async () => {
     console.log(`[${EXTENSION_NAME}] 正在初始化楼层导航与收起插件...`);
 
-    // 1. 初始化设置配置并应用 CSS 变量
-    const settings = getSettings();
-    applyGlobalCollapseHeight(settings.collapseHeight);
+    // 1. 初始化设置配置（优先从 localStorage 读取，秒级恢复）并应用 CSS 变量
+    getSettings();
+    applyGlobalCollapseHeight(activeSettings.collapseHeight);
 
-    // 2. 注入扩展可视化设置面板
+    // 2. 注入扩展可视化设置面板并绑定事件
     await setupSettings();
 
     // 3. 注入输入区悬浮跳转按钮
@@ -854,13 +965,13 @@ jQuery(async () => {
     // 5. 设置针对新增消息与图片的监听
     setupObservers();
 
-    // 6. 注册核心事件钩子
+    // 6. 注册核心事件钩子（包含 SETTINGS_LOADED 监听）
     setupEventHooks();
 
     // 7. 初次加载对已有楼层进行全量扫描
     setTimeout(() => {
         refreshAllCollapses(true);
-    }, 400);
+    }, 300);
 
     console.log(`[${EXTENSION_NAME}] 初始化成功！`);
 });

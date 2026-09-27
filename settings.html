@@ -9,7 +9,7 @@
                 <!-- 启用楼层收起 -->
                 <label class="checkbox_label" for="st_floor_enable_collapse">
                     <input id="st_floor_enable_collapse" type="checkbox">
-                    <span>启用超长楼层收起按钮</span>
+                    <span>启用超长楼层收起功能</span>
                 </label>
 
                 <!-- 折叠高度阈值 -->
@@ -24,7 +24,7 @@
                 <!-- 自动收起超长楼层 -->
                 <label class="checkbox_label" for="st_floor_auto_collapse">
                     <input id="st_floor_auto_collapse" type="checkbox">
-                    <span title="当加载或生成超过阈值的长楼层时，自动将其收起">自动收起超过阈值的历史长楼层</span>
+                    <span title="当开启后，超过高度阈值的历史长楼层将自动收起，仅保留最新楼层完整展开">自动收起超过阈值的历史长楼层</span>
                 </label>
 
                 <!-- 从倒数第 N 楼开始自动收起（让最新楼保持展开） -->
@@ -55,9 +55,17 @@
                     <input id="st_floor_preview_len" type="range" class="slider" min="10" max="60" step="5" value="20">
                 </div>
 
+                <!-- 手动保存按钮，给用户最直观的确定感与双保险保存 -->
+                <div style="margin-top: 4px;">
+                    <button id="st_floor_save_btn" type="button" class="menu_button wide100p flex-container justifyCenter alignitemscenter" style="gap: 8px;">
+                        <i class="fa-solid fa-floppy-disk"></i>
+                        <span>保存并立即应用设置</span>
+                    </button>
+                </div>
+
                 <div class="hint opacity70p" style="font-size: 11px; line-height: 1.4;">
                     <i class="fa-solid fa-circle-info"></i>
-                    提示：N=2 时，当 AI 回复不再是最后一楼（用户发了新消息或有了更新的回复），该历史超长楼层就会自动收起，始终保持最新楼层展开阅读。
+                    提示：修改后设置会自动实时保存至本地存储及系统配置中，刷新页面永久保留。N=2 时最新楼层始终展开，历史长回复自动收起。
                 </div>
             </div>
         </div>
