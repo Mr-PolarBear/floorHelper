@@ -1,0 +1,12 @@
+{
+    "display_name": "楼层导航与收起 (Floor Navigator)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "auto_update": false
+}

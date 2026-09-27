@@ -1,0 +1,407 @@
+/* ==========================================================================
+   SillyTavern Floor Navigator & Collapser Extension Styles
+   ========================================================================== */
+
+:root {
+    --st-floor-collapse-height: 300px;
+    --st-floor-nav-primary: var(--SmartThemeQuoteColor, #4a90e2);
+    --st-floor-nav-bg: var(--SmartThemeBlurTintColor, rgba(28, 30, 40, 0.95));
+    --st-floor-nav-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+    --st-floor-nav-text: var(--SmartThemeBodyColor, #e4e4e7);
+}
+
+/* 确保输入区容器为定位基准，防止悬浮按钮脱离跑到屏幕最顶端 */
+#form_sheld {
+    position: relative !important;
+}
+
+/* ==========================================================================
+   1. 楼层折叠 (Message Collapse)
+   ========================================================================== */
+
+/* 折叠容器行：位于 mes_block 底部居中 */
+.st-floor-collapse-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    padding: 8px 0 4px 0;
+    margin-top: 6px;
+    clear: both;
+    position: relative;
+    z-index: 10;
+}
+
+/* 折叠/展开按钮 */
+.st-floor-collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 4px 16px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--st-floor-nav-text);
+    background: var(--st-floor-nav-bg);
+    border: 1px solid var(--st-floor-nav-border);
+    border-radius: 14px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    opacity: 0.85;
+}
+
+.st-floor-collapse-btn:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+    border-color: var(--st-floor-nav-primary);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+    color: #fff;
+}
+
+.st-floor-collapse-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.st-floor-collapse-btn i {
+    font-size: 11px;
+    transition: transform 0.2s ease;
+}
+
+/* 当楼层处于折叠状态时的 mes_text */
+.mes.st-floor-collapsed .mes_text {
+    max-height: var(--st-floor-collapse-height, 300px) !important;
+    overflow: hidden !important;
+    position: relative !important;
+    transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 折叠状态下底部的渐变半透明遮罩 */
+.mes.st-floor-collapsed .mes_text::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 70px;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0%, var(--SmartThemeChatColor, rgba(20, 20, 28, 0.96)) 100%);
+    pointer-events: none;
+    z-index: 5;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+/* ==========================================================================
+   2. 输入区悬浮跳转按钮 (Floating Jump Button)
+   ========================================================================== */
+
+#st-floor-nav-trigger {
+    position: absolute;
+    right: 18px;
+    top: -38px;
+    z-index: 35;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--st-floor-nav-text);
+    background: var(--st-floor-nav-bg);
+    border: 1px solid var(--st-floor-nav-border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: 20px;
+    cursor: pointer;
+    user-select: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s ease;
+    opacity: 0.9;
+}
+
+#st-floor-nav-trigger:hover {
+    opacity: 1;
+    transform: translateY(-2px);
+    border-color: var(--st-floor-nav-primary);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+    color: #fff;
+}
+
+#st-floor-nav-trigger.active {
+    background: var(--st-floor-nav-primary);
+    border-color: var(--st-floor-nav-primary);
+    color: #ffffff;
+    box-shadow: 0 0 12px rgba(74, 144, 226, 0.5);
+}
+
+#st-floor-nav-trigger .st-floor-nav-count {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: bold;
+    min-width: 16px;
+    text-align: center;
+}
+
+/* ==========================================================================
+   3. 楼层缩略列表弹层 (Floor Navigator Panel)
+   ========================================================================== */
+
+#st-floor-nav-panel {
+    position: absolute;
+    right: 18px;
+    bottom: 52px;
+    width: 360px;
+    max-width: calc(100vw - 36px);
+    height: 480px;
+    max-height: 60vh;
+    background: var(--st-floor-nav-bg);
+    border: 1px solid var(--st-floor-nav-border);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 14px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: inherit;
+    color: var(--st-floor-nav-text);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    transform-origin: bottom right;
+}
+
+#st-floor-nav-panel.st-hidden {
+    display: none !important;
+}
+
+/* 面板头部 */
+.st-floor-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--st-floor-nav-border);
+    background: rgba(0, 0, 0, 0.15);
+    flex-shrink: 0;
+}
+
+.st-floor-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--st-floor-nav-text);
+}
+
+.st-floor-panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.st-floor-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--st-floor-nav-text);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s ease;
+    opacity: 0.8;
+}
+
+.st-floor-action-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.12);
+    border-color: var(--st-floor-nav-border);
+}
+
+/* 搜索过滤栏 */
+.st-floor-search-bar {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.08);
+    flex-shrink: 0;
+}
+
+.st-floor-search-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--st-floor-nav-border);
+    border-radius: 8px;
+    padding: 4px 10px;
+    color: var(--st-floor-nav-text);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.st-floor-search-input:focus {
+    border-color: var(--st-floor-nav-primary);
+}
+
+/* 列表主体 */
+.st-floor-list-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* 滚动条美化 */
+.st-floor-list-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.st-floor-list-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+}
+
+.st-floor-list-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+/* 单个楼层条目 (Item) */
+.st-floor-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+}
+
+.st-floor-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.15);
+    transform: translateX(2px);
+}
+
+/* 楼层编号徽章 */
+.st-floor-item-badge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--st-floor-nav-primary);
+    min-width: 32px;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 楼层内容包裹区 */
+.st-floor-item-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* 角色标签与名字 */
+.st-floor-item-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.st-floor-item-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--st-floor-nav-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 130px;
+}
+
+.st-floor-item-role-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.st-floor-role-user {
+    background: rgba(74, 144, 226, 0.25);
+    color: #8ac0ff;
+    border: 1px solid rgba(74, 144, 226, 0.35);
+}
+
+.st-floor-role-char {
+    background: rgba(230, 126, 34, 0.25);
+    color: #f5b072;
+    border: 1px solid rgba(230, 126, 34, 0.35);
+}
+
+.st-floor-role-system {
+    background: rgba(149, 165, 166, 0.25);
+    color: #bdc3c7;
+    border: 1px solid rgba(149, 165, 166, 0.35);
+}
+
+/* 前20字缩略正文 */
+.st-floor-item-preview {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.72);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.4;
+}
+
+/* 空状态提示 */
+.st-floor-empty-tip {
+    text-align: center;
+    padding: 30px 10px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+}
+
+/* ==========================================================================
+   4. 楼层跳转高亮光斑动画
+   ========================================================================== */
+
+@keyframes stFloorNavPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(74, 144, 226, 0.8), inset 0 0 15px rgba(74, 144, 226, 0.4);
+        border-color: rgba(74, 144, 226, 0.8);
+    }
+    50% {
+        box-shadow: 0 0 25px 6px rgba(74, 144, 226, 0.5), inset 0 0 25px rgba(74, 144, 226, 0.3);
+        border-color: rgba(74, 144, 226, 1);
+    }
+    100% {
+        box-shadow: none;
+        border-color: transparent;
+    }
+}
+
+.mes.st-floor-nav-highlight {
+    animation: stFloorNavPulse 1.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+    border-radius: 8px;
+}
