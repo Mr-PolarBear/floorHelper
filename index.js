@@ -374,11 +374,7 @@ function injectFloatingNavButton() {
         trigger.id = 'st-floor-nav-trigger';
         trigger.className = 'interactable';
         trigger.title = '点击查看楼层缩略列表并快速跳转';
-        trigger.innerHTML = `
-            <i class="fa-solid fa-list-ol"></i>
-            <span>楼层跳转</span>
-            <span class="st-floor-nav-count">0</span>
-        `;
+        trigger.innerHTML = `<span>跳转</span>`;
 
         trigger.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -386,23 +382,23 @@ function injectFloatingNavButton() {
         });
 
         formSheld.appendChild(trigger);
+    } else {
+        trigger.innerHTML = `<span>跳转</span>`;
+        trigger.title = '点击查看楼层缩略列表并快速跳转';
     }
 
     updateNavTriggerCount();
 }
 
 /**
- * 更新悬浮按钮上的楼层计数
+ * 更新悬浮按钮提示信息
  */
 function updateNavTriggerCount() {
     const trigger = document.querySelector('#st-floor-nav-trigger');
     if (!trigger) return;
 
-    const countEl = trigger.querySelector('.st-floor-nav-count');
     const messages = document.querySelectorAll('#chat .mes');
-    if (countEl) {
-        countEl.textContent = messages.length;
-    }
+    trigger.title = `点击查看楼层列表并快速跳转 (共 ${messages.length} 楼)`;
 }
 
 /**
