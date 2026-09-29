@@ -354,37 +354,66 @@ function refreshAllCollapses(forceRecalculateAutoCollapse = false) {
 }
 
 /**
- * 构建并注入输入区上方的悬浮跳转按钮
+ * 直接平滑滚动到最后一条消息的头部
+ */
+function scrollToLastMessageHeader() {
+    const chatContainer = document.querySelector('#chat');
+    if (!chatContainer) return;
+
+    const messages = Array.from(chatContainer.querySelectorAll('.mes')).filter(el => el.style.display !== 'none');
+    if (messages.length === 0) return;
+
+    const lastMes = messages[messages.length - 1];
+    lastMes.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    highlightMessage(lastMes);
+}
+
+/**
+ * 构建并注入输入区上方的悬浮工具栏（包含向下直达末尾按钮与跳转按钮）
  */
 function injectFloatingNavButton() {
     const settings = getSettings();
-    let trigger = document.querySelector('#st-floor-nav-trigger');
+    let toolbar = document.querySelector('#st-floor-nav-toolbar');
     const formSheld = document.querySelector('#form_sheld');
 
     if (!formSheld) return;
 
     if (!settings.enableJump) {
-        if (trigger) trigger.remove();
+        if (toolbar) toolbar.remove();
         closeNavPanel();
         return;
     }
 
-    if (!trigger) {
-        trigger = document.createElement('div');
-        trigger.id = 'st-floor-nav-trigger';
-        trigger.className = 'interactable';
-        trigger.title = '点击查看楼层缩略列表并快速跳转';
-        trigger.innerHTML = `<span>跳转</span>`;
+    if (!toolbar) {
+        toolbar = document.createElement('div');
+        toolbar.id = 'st-floor-nav-toolbar';
+        toolbar.innerHTML = `
+            <div id="st-floor-scroll-bottom-btn" class="st-floor-floating-btn interactable" title="直接滚动到最后一条消息的头部">
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div id="st-floor-nav-trigger" class="st-floor-floating-btn interactable" title="点击查看楼层列表并快速跳转">
+                <span>跳转</span>
+            </div>
+        `;
 
-        trigger.addEventListener('click', (e) => {
+        // 点击向下箭头：直接滚动到最后一条消息的头部
+        toolbar.querySelector('#st-floor-scroll-bottom-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            scrollToLastMessageHeader();
+        });
+
+        // 点击跳转按钮：呼出/收起楼层列表
+        toolbar.querySelector('#st-floor-nav-trigger').addEventListener('click', (e) => {
             e.stopPropagation();
             toggleNavPanel();
         });
 
-        formSheld.appendChild(trigger);
+        formSheld.appendChild(toolbar);
     } else {
-        trigger.innerHTML = `<span>跳转</span>`;
-        trigger.title = '点击查看楼层缩略列表并快速跳转';
+        const trigger = toolbar.querySelector('#st-floor-nav-trigger');
+        if (trigger) {
+            trigger.innerHTML = `<span>跳转</span>`;
+        }
     }
 
     updateNavTriggerCount();
@@ -668,9 +697,9 @@ function setupOutsideClickListener() {
     document.addEventListener('click', (e) => {
         if (!isPanelOpen) return;
         const panel = document.querySelector('#st-floor-nav-panel');
-        const trigger = document.querySelector('#st-floor-nav-trigger');
+        const toolbar = document.querySelector('#st-floor-nav-toolbar');
 
-        if (panel && !panel.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
+        if (panel && !panel.contains(e.target) && (!toolbar || !toolbar.contains(e.target))) {
             closeNavPanel();
         }
     });

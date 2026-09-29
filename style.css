@@ -94,18 +94,26 @@
 }
 
 /* ==========================================================================
-   2. 输入区悬浮跳转按钮 (Floating Jump Button)
+   2. 输入区悬浮工具栏 (Floating Toolbar)
    ========================================================================== */
 
-#st-floor-nav-trigger {
+#st-floor-nav-toolbar {
     position: absolute;
     right: 18px;
-    top: -58px;
+    top: -72px; /* 进一步向上移，完全避开下方分支切换箭头 */
     z-index: 35;
     display: inline-flex;
     align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.st-floor-floating-btn {
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
-    padding: 3px 10px;
+    height: 24px;
+    padding: 0 10px;
     font-size: 12px;
     font-weight: 500;
     line-height: 1.5;
@@ -114,20 +122,30 @@
     border: 1px solid var(--st-floor-nav-border);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    border-radius: 14px;
+    border-radius: 12px;
     cursor: pointer;
-    user-select: none;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
     transition: all 0.2s ease;
     opacity: 0.88;
 }
 
-#st-floor-nav-trigger:hover {
+/* 直达最新消息头部的向下箭头按钮 */
+#st-floor-scroll-bottom-btn {
+    width: 24px;
+    padding: 0;
+    font-size: 11px;
+}
+
+.st-floor-floating-btn:hover {
     opacity: 1;
     transform: translateY(-2px);
     border-color: var(--st-floor-nav-primary);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     color: #fff;
+}
+
+.st-floor-floating-btn:active {
+    transform: translateY(0);
 }
 
 #st-floor-nav-trigger.active {
@@ -140,7 +158,7 @@
 #st-floor-nav-panel {
     position: absolute;
     right: 18px;
-    bottom: 64px;
+    bottom: 78px;
     width: 360px;
     max-width: calc(100vw - 36px);
     height: 480px;
