@@ -14,6 +14,10 @@ const defaultSettings = {
     autoCollapseFromN: 2, // 从倒数第几条消息开始生效，默认 2 (即最后一楼保持展开，更早历史楼层自动收起)
     enableJump: true,
     previewLength: 20,
+    enableTagCheck: true, // 是否启用标签检查与红色警示提醒
+    checkTags: '<text>', // 检查的标签列表，支持逗号或空格分隔，如 <text>, <a>, <b> 或 text, code
+    tagCheckMode: 'required', // 默认模式 B：强制必填 ('required')；可选模式 A：成对闭合 ('pair')
+    tagCheckOnlyAi: true, // 仅对 AI 角色回复生效
 };
 
 // 内存中激活的配置
@@ -172,6 +176,185 @@ function getCleanTextPreview(rawHtml, maxLen = 20) {
 }
 
 /**
+ * 解析用户配置的标签字符串为纯标签名数组
+ * 例如输入 "<text>, <a>, <b>" 或 "text, a, b" -> ['text', 'a', 'b']
+ * @param {string} tagsStr 
+ * @returns {string[]}
+ */
+function parseConfiguredTags(tagsStr) {
+    if (!tagsStr || typeof tagsStr !== 'string') return [];
+    const parts = tagsStr.split(/[,;\s\n\r，；]+/);
+    const tags = [];
+    for (let p of parts) {
+        const clean = p.replace(/^[<</]+|[>]+$/g, '').trim().toLowerCase();
+        if (clean && /^[a-zA-Z0-9_\-:]+$/.test(clean)) {
+            if (!tags.includes(clean)) {
+                tags.push(clean);
+            }
+        }
+    }
+    return tags;
+}
+
+/**
+ * 判断指定楼层是否属于 AI 角色消息
+ * @param {HTMLElement} mesElement 
+ * @returns {boolean}
+ */
+function isAiMessage(mesElement) {
+    const mesIdStr = mesElement.getAttribute('mesid');
+    const context = getStContext();
+    if (mesIdStr !== null && mesIdStr !== undefined && context?.chat) {
+        const mesId = parseInt(mesIdStr, 10);
+        if (!isNaN(mesId) && context.chat[mesId]) {
+            const chatItem = context.chat[mesId];
+            return !chatItem.is_user && !chatItem.is_system;
+        }
+    }
+    const isUser = mesElement.getAttribute('is_user') === 'true' || mesElement.classList.contains('is_user');
+    const isSystem = mesElement.getAttribute('is_system') === 'true' || mesElement.classList.contains('is_system');
+    return !isUser && !isSystem;
+}
+
+/**
+ * 获取消息的真实原始文本（优先从 SillyTavern 全局 chat 数组读取，确保无 DOM 自动修复干扰）
+ * @param {HTMLElement} mesElement 
+ * @returns {string}
+ */
+function getMessageRawText(mesElement) {
+    const mesIdStr = mesElement.getAttribute('mesid');
+    const context = getStContext();
+    if (mesIdStr !== null && mesIdStr !== undefined && context?.chat) {
+        const mesId = parseInt(mesIdStr, 10);
+        if (!isNaN(mesId) && context.chat[mesId]) {
+            const chatItem = context.chat[mesId];
+            if (typeof chatItem.mes === 'string') {
+                return chatItem.mes;
+            }
+        }
+    }
+
+    const mesText = mesElement.querySelector('.mes_text');
+    return mesText ? (mesText.textContent || mesText.innerText || '') : '';
+}
+
+/**
+ * 检查指定楼层的标签完整性
+ * @param {HTMLElement} mesElement 
+ * @param {object} settings 
+ * @returns {{hasError: boolean, errors: Array<{tag: string, type: string, msg: string}>, summaryText: string, detailText: string}}
+ */
+function checkMessageTags(mesElement, settings) {
+    if (!settings.enableTagCheck) {
+        return { hasError: false, errors: [], summaryText: '', detailText: '' };
+    }
+
+    if (settings.tagCheckOnlyAi && !isAiMessage(mesElement)) {
+        return { hasError: false, errors: [], summaryText: '', detailText: '' };
+    }
+
+    const configuredTags = parseConfiguredTags(settings.checkTags);
+    if (configuredTags.length === 0) {
+        return { hasError: false, errors: [], summaryText: '', detailText: '' };
+    }
+
+    const rawText = getMessageRawText(mesElement);
+    const mode = settings.tagCheckMode || 'required';
+    const errors = [];
+
+    const escapeRegex = (s) => s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+
+    for (const t of configuredTags) {
+        const escaped = escapeRegex(t);
+
+        // 检测末尾截断（例如以 `<text` 或 `</text` 结尾但未闭合 `>`）
+        const tailIncomplete = new RegExp(`<\/?${escaped}(?:\\s+[^>]*)?$`, 'i').test(rawText) && !rawText.trimEnd().endsWith('>');
+
+        let openCount = 0;
+        let closeCount = 0;
+        let orderError = false;
+
+        const regex = new RegExp(`(<\\/?)(${escaped})(\\s+[^>]*)?(\\/?>)`, 'gi');
+        let match;
+        while ((match = regex.exec(rawText)) !== null) {
+            const isClosing = match[1] === '</';
+            const isSelfClosing = match[4] === '/>';
+
+            if (isSelfClosing) {
+                openCount++;
+                closeCount++;
+            } else if (isClosing) {
+                closeCount++;
+                if (closeCount > openCount) {
+                    orderError = true;
+                }
+            } else {
+                openCount++;
+            }
+        }
+
+        if (mode === 'required') {
+            // 模式 B：强制必填（必须包含且成对完整）
+            if (openCount === 0 && closeCount === 0 && !tailIncomplete) {
+                errors.push({ tag: t, type: 'missing_all', msg: `缺少 <${t}> 标签` });
+            } else if (tailIncomplete) {
+                errors.push({ tag: t, type: 'tail_incomplete', msg: `<${t}> 标签末尾被截断/未闭合` });
+            } else if (openCount > closeCount) {
+                const diff = openCount - closeCount;
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` + (diff > 1 ? ` (${diff}处)` : '') });
+            } else if (openCount < closeCount) {
+                const diff = closeCount - openCount;
+                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` + (diff > 1 ? ` (${diff}处)` : '') });
+            } else if (orderError) {
+                errors.push({ tag: t, type: 'order_error', msg: `<${t}> 标签闭合顺序颠倒` });
+            }
+        } else {
+            // 模式 A：出现即闭合（若未出现则不强制报错）
+            if (openCount === 0 && closeCount === 0 && !tailIncomplete) {
+                // 未出现此标签，正常
+            } else if (tailIncomplete) {
+                errors.push({ tag: t, type: 'tail_incomplete', msg: `<${t}> 标签末尾被截断/未闭合` });
+            } else if (openCount > closeCount) {
+                const diff = openCount - closeCount;
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` + (diff > 1 ? ` (${diff}处)` : '') });
+            } else if (openCount < closeCount) {
+                const diff = closeCount - openCount;
+                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` + (diff > 1 ? ` (${diff}处)` : '') });
+            } else if (orderError) {
+                errors.push({ tag: t, type: 'order_error', msg: `<${t}> 标签闭合顺序颠倒` });
+            }
+        }
+    }
+
+    if (errors.length === 0) {
+        return { hasError: false, errors: [], summaryText: '', detailText: '' };
+    }
+
+    // 生成紧凑简报
+    let summaryText = '';
+    if (errors.length === 1) {
+        summaryText = errors[0].msg;
+    } else {
+        const shortTags = errors.map(e => e.type === 'missing_close' ? `</${e.tag}>` : `<${e.tag}>`).join(', ');
+        if (shortTags.length <= 22) {
+            summaryText = `缺少 ${shortTags}`;
+        } else {
+            summaryText = `标签异常 (${errors.length}处)`;
+        }
+    }
+
+    const detailLines = ['【AI 标签完整性检查异常】', ...errors.map(e => `• ${e.msg}`)];
+    const detailText = detailLines.join('\n');
+
+    return {
+        hasError: true,
+        errors,
+        summaryText,
+        detailText,
+    };
+}
+
+/**
  * 创建折叠控制行 DOM
  * @param {HTMLElement} mesElement 
  * @returns {HTMLElement}
@@ -184,6 +367,10 @@ function createCollapseRow(mesElement) {
             <i class="fa-solid fa-chevron-up"></i>
             <span class="st-floor-collapse-label">收起楼层</span>
         </button>
+        <div class="st-floor-tag-badge" style="display: none;">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span class="st-floor-tag-badge-text"></span>
+        </div>
     `;
 
     const btn = collapseRow.querySelector('.st-floor-collapse-btn');
@@ -192,11 +379,20 @@ function createCollapseRow(mesElement) {
         toggleMessageCollapse(mesElement);
     });
 
+    const badge = collapseRow.querySelector('.st-floor-tag-badge');
+    badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const info = badge.getAttribute('data-err-info') || '标签不完整';
+        if (window.toastr) {
+            window.toastr.warning(info.replace(/\n/g, '<br>'), '标签完整性提示');
+        }
+    });
+
     return collapseRow;
 }
 
 /**
- * 检查并更新单个消息楼层的折叠状态
+ * 检查并更新单个消息楼层的折叠状态及标签完整性检查
  * @param {HTMLElement} mesElement 
  * @param {boolean} shouldAutoCollapse 是否符合“从倒数第N楼开始自动收起”的条件
  * @param {boolean} forceRecalculateAutoCollapse 是否重新应用自动收起规则（如设置项修改时立即生效）
@@ -205,75 +401,98 @@ function updateMessageCollapse(mesElement, shouldAutoCollapse = false, forceReca
     if (!mesElement || !(mesElement instanceof HTMLElement)) return;
 
     const settings = getSettings();
-    if (!settings.enableCollapse) {
-        // 功能被禁用时，清理折叠类与按钮
-        mesElement.classList.remove('st-floor-collapsed');
-        mesElement.removeAttribute('data-st-collapsed-by');
-        const existingRow = mesElement.querySelector('.st-floor-collapse-row');
-        if (existingRow) existingRow.remove();
-        return;
-    }
-
     const mesBlock = mesElement.querySelector('.mes_block');
     const mesText = mesElement.querySelector('.mes_text');
     if (!mesBlock || !mesText) return;
 
-    const threshold = Number(settings.collapseHeight) || 300;
-    // 获取该楼层真实未折叠高度
-    const realHeight = getRealMessageContentHeight(mesElement, mesText);
-    const isOverHeight = realHeight > threshold;
-
     let collapseRow = mesBlock.querySelector('.st-floor-collapse-row');
-
-    if (!isOverHeight) {
-        // 如果真实高度小于等于新阈值，必须立即完全展开并隐藏折叠按钮
-        if (collapseRow) collapseRow.style.display = 'none';
-        mesElement.classList.remove('st-floor-collapsed');
-        mesElement.removeAttribute('data-st-collapsed-by');
-        return;
-    }
-
-    // 真实高度超过阈值，确保有折叠按钮
     if (!collapseRow) {
         collapseRow = createCollapseRow(mesElement);
         mesBlock.appendChild(collapseRow);
-    } else {
-        collapseRow.style.display = 'flex';
     }
 
-    // 自动收起逻辑
-    if (settings.autoCollapse) {
-        if (shouldAutoCollapse) {
-            // 符合自动收起条件：如果强制重算或用户没有明确手动展开过
-            if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-user-action') !== 'expanded') {
-                mesElement.classList.add('st-floor-collapsed');
-                mesElement.setAttribute('data-st-collapsed-by', 'auto');
-                if (forceRecalculateAutoCollapse) {
-                    mesElement.removeAttribute('data-user-action');
+    const collapseBtn = collapseRow.querySelector('.st-floor-collapse-btn');
+    const tagBadge = collapseRow.querySelector('.st-floor-tag-badge');
+
+    // 1. 检查楼层折叠高度
+    let showCollapseBtn = false;
+    if (settings.enableCollapse) {
+        const threshold = Number(settings.collapseHeight) || 300;
+        const realHeight = getRealMessageContentHeight(mesElement, mesText);
+        const isOverHeight = realHeight > threshold;
+
+        if (isOverHeight) {
+            showCollapseBtn = true;
+            if (settings.autoCollapse) {
+                if (shouldAutoCollapse) {
+                    if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-user-action') !== 'expanded') {
+                        mesElement.classList.add('st-floor-collapsed');
+                        mesElement.setAttribute('data-st-collapsed-by', 'auto');
+                        if (forceRecalculateAutoCollapse) {
+                            mesElement.removeAttribute('data-user-action');
+                        }
+                    }
+                } else {
+                    if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-st-collapsed-by') === 'auto') {
+                        if (mesElement.getAttribute('data-user-action') !== 'collapsed') {
+                            mesElement.classList.remove('st-floor-collapsed');
+                            mesElement.removeAttribute('data-st-collapsed-by');
+                        }
+                    }
+                }
+            } else {
+                if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-st-collapsed-by') === 'auto') {
+                    if (mesElement.getAttribute('data-user-action') !== 'collapsed') {
+                        mesElement.classList.remove('st-floor-collapsed');
+                        mesElement.removeAttribute('data-st-collapsed-by');
+                    }
                 }
             }
+            updateCollapseButtonState(mesElement);
         } else {
-            // 如果不符合自动收起条件（例如它处于最新楼层 < N 的保护范围内）
-            // 若它之前是被“自动收起”的，且用户没有明确手动收起过它，立即展开恢复！
-            if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-st-collapsed-by') === 'auto') {
-                if (mesElement.getAttribute('data-user-action') !== 'collapsed') {
-                    mesElement.classList.remove('st-floor-collapsed');
-                    mesElement.removeAttribute('data-st-collapsed-by');
-                }
-            }
+            // 未超高楼层：展开并清理折叠标记
+            mesElement.classList.remove('st-floor-collapsed');
+            mesElement.removeAttribute('data-st-collapsed-by');
         }
     } else {
-        // 如果全局关闭了“自动收起”选项：
-        // 凡此前由“自动收起”折叠的楼层（且用户未手动点击收起），立即全部解除折叠，恢复完整展示！
-        if (forceRecalculateAutoCollapse || mesElement.getAttribute('data-st-collapsed-by') === 'auto') {
-            if (mesElement.getAttribute('data-user-action') !== 'collapsed') {
-                mesElement.classList.remove('st-floor-collapsed');
-                mesElement.removeAttribute('data-st-collapsed-by');
-            }
-        }
+        // 全局禁用折叠
+        mesElement.classList.remove('st-floor-collapsed');
+        mesElement.removeAttribute('data-st-collapsed-by');
     }
 
-    updateCollapseButtonState(mesElement);
+    if (collapseBtn) {
+        collapseBtn.style.display = showCollapseBtn ? 'inline-flex' : 'none';
+    }
+
+    // 2. 检查标签完整性（即使楼层未超高，也会在楼层底部显示红色警示徽章）
+    let showTagBadge = false;
+    if (settings.enableTagCheck) {
+        const tagResult = checkMessageTags(mesElement, settings);
+        if (tagResult.hasError) {
+            showTagBadge = true;
+            if (tagBadge) {
+                tagBadge.style.display = 'inline-flex';
+                const label = tagBadge.querySelector('.st-floor-tag-badge-text');
+                if (label) label.textContent = tagResult.summaryText;
+                tagBadge.title = tagResult.detailText;
+                tagBadge.setAttribute('data-err-info', tagResult.detailText);
+            }
+            mesElement.setAttribute('data-st-tag-error', tagResult.summaryText);
+        } else {
+            if (tagBadge) tagBadge.style.display = 'none';
+            mesElement.removeAttribute('data-st-tag-error');
+        }
+    } else {
+        if (tagBadge) tagBadge.style.display = 'none';
+        mesElement.removeAttribute('data-st-tag-error');
+    }
+
+    // 3. 控制整行显隐（只要有折叠按钮或有标签报警，均展示该行）
+    if (showCollapseBtn || showTagBadge) {
+        collapseRow.style.display = 'flex';
+    } else {
+        collapseRow.style.display = 'none';
+    }
 }
 
 /**
@@ -346,9 +565,12 @@ function refreshAllCollapses(forceRecalculateAutoCollapse = false) {
         if (mes.classList.contains('st-floor-collapsed')) {
             collapsedCount++;
         }
+        if (mes.hasAttribute('data-st-tag-error')) {
+            tagErrorCount++;
+        }
     });
 
-    console.log(`[${EXTENSION_NAME}] 刷新楼层: 共 ${total} 楼, 自动收起: ${settings.autoCollapse ? '开启(>=倒数' + fromN + ')' : '关闭'}, 已收起: ${collapsedCount} 楼, 阈值: ${settings.collapseHeight}px`);
+    console.log(`[${EXTENSION_NAME}] 刷新楼层: 共 ${total} 楼, 已收起: ${collapsedCount} 楼, 标签异常: ${tagErrorCount} 楼`);
 
     updateNavTriggerCount();
 }
@@ -427,7 +649,12 @@ function updateNavTriggerCount() {
     if (!trigger) return;
 
     const messages = document.querySelectorAll('#chat .mes');
-    trigger.title = `点击查看楼层列表并快速跳转 (共 ${messages.length} 楼)`;
+    const errCount = document.querySelectorAll('#chat .mes[data-st-tag-error]').length;
+    if (errCount > 0) {
+        trigger.title = `点击查看楼层列表 (共 ${messages.length} 楼, ${errCount} 楼存在标签异常)`;
+    } else {
+        trigger.title = `点击查看楼层列表并快速跳转 (共 ${messages.length} 楼)`;
+    }
 }
 
 /**
@@ -636,10 +863,13 @@ function renderFloorList() {
         const rawContent = mesTextEl ? mesTextEl.innerHTML : '';
         const preview = getCleanTextPreview(rawContent, previewLen);
 
+        const tagError = mes.getAttribute('data-st-tag-error');
+        const errTagHtml = tagError ? `<span class="st-floor-item-err-tag" title="标签异常: ${tagError}"><i class="fa-solid fa-triangle-exclamation"></i> ${tagError}</span>` : '';
+
         const item = document.createElement('div');
         item.className = 'st-floor-item';
         item.setAttribute('data-mesid', mesId);
-        item.setAttribute('data-search', `${floorNumber} ${charName} ${preview}`.toLowerCase());
+        item.setAttribute('data-search', `${floorNumber} ${charName} ${preview} ${tagError || ''}`.toLowerCase());
 
         item.innerHTML = `
             <div class="st-floor-item-badge">#${floorNumber}</div>
@@ -647,6 +877,7 @@ function renderFloorList() {
                 <div class="st-floor-item-header">
                     <span class="st-floor-item-role-tag ${roleClass}">${roleText}</span>
                     <span class="st-floor-item-name" title="${charName}">${charName}</span>
+                    ${errTagHtml}
                 </div>
                 <div class="st-floor-item-preview" title="${preview}">${preview}</div>
             </div>
@@ -794,6 +1025,19 @@ function syncSettingsToUI() {
         block.css({ opacity: '0.4', 'pointer-events': 'none' });
     }
 
+    // 标签检查配置同步
+    $('#st_floor_enable_tag_check').prop('checked', settings.enableTagCheck ?? true);
+    $('#st_floor_check_tags').val(settings.checkTags || '<text>');
+    $('#st_floor_tag_check_mode').val(settings.tagCheckMode || 'required');
+    $('#st_floor_tag_check_only_ai').prop('checked', settings.tagCheckOnlyAi ?? true);
+
+    const tagSubgroup = $('#st_floor_tag_check_subgroup');
+    if (settings.enableTagCheck ?? true) {
+        tagSubgroup.css({ opacity: '1', 'pointer-events': 'auto' });
+    } else {
+        tagSubgroup.css({ opacity: '0.4', 'pointer-events': 'none' });
+    }
+
     applyGlobalCollapseHeight(settings.collapseHeight);
 }
 
@@ -873,7 +1117,45 @@ async function setupSettings() {
             if (isPanelOpen) renderFloorList();
         });
 
-        // 8. 显式保存按钮（给用户百分之百的掌控感与即刻确认）
+        // 8. 标签检查开关
+        $('#st_floor_enable_tag_check').off('change').on('change', function () {
+            activeSettings.enableTagCheck = $(this).prop('checked');
+            const tagSubgroup = $('#st_floor_tag_check_subgroup');
+            if (activeSettings.enableTagCheck) {
+                tagSubgroup.css({ opacity: '1', 'pointer-events': 'auto' });
+            } else {
+                tagSubgroup.css({ opacity: '0.4', 'pointer-events': 'none' });
+            }
+            persistSettings(false);
+            refreshAllCollapses(true);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 9. 检查标签列表输入框
+        $('#st_floor_check_tags').off('input change').on('input change', function () {
+            activeSettings.checkTags = $(this).val();
+            persistSettings(false);
+            refreshAllCollapses(true);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 10. 检查模式切换
+        $('#st_floor_tag_check_mode').off('change').on('change', function () {
+            activeSettings.tagCheckMode = $(this).val();
+            persistSettings(false);
+            refreshAllCollapses(true);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 11. 仅检查 AI 消息开关
+        $('#st_floor_tag_check_only_ai').off('change').on('change', function () {
+            activeSettings.tagCheckOnlyAi = $(this).prop('checked');
+            persistSettings(false);
+            refreshAllCollapses(true);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 12. 显式保存按钮（给用户百分之百的掌控感与即刻确认）
         $('#st_floor_save_btn').off('click').on('click', function (e) {
             e.stopPropagation();
             persistSettings(true);
