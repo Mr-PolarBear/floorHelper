@@ -553,6 +553,7 @@ function refreshAllCollapses(forceRecalculateAutoCollapse = false) {
     const fromN = Math.max(1, Number(settings.autoCollapseFromN) || 2);
 
     let collapsedCount = 0;
+    let tagErrorCount = 0;
 
     messages.forEach((mes, index) => {
         // 该楼层处于倒数第几位（最新一条为倒数第 1）
