@@ -16,6 +16,7 @@ const defaultSettings = {
     previewLength: 20,
     enableTagCheck: true, // 是否启用标签检查与红色警示提醒
     checkTags: '<text>', // 检查的标签列表，支持逗号或空格分隔，如 <text>, <a>, <b> 或 text, code
+    ignoreTags: '<think>, <thinking>, <thought>, <think_nya~>, <thought_process>, <reasoning>', // 跳过检查的思考/草稿标签列表
     tagCheckMode: 'required', // 默认模式 B：强制必填 ('required')；可选模式 A：成对闭合 ('pair')
     tagCheckOnlyAi: true, // 仅对 AI 角色回复生效
 };
@@ -176,8 +177,8 @@ function getCleanTextPreview(rawHtml, maxLen = 20) {
 }
 
 /**
- * 解析用户配置的标签字符串为纯标签名数组
- * 例如输入 "<text>, <a>, <b>" 或 "text, a, b" -> ['text', 'a', 'b']
+ * 解析用户配置的标签字符串为纯标签名数组（保留用户原始大小写，内部去重时不区分大小写）
+ * 例如输入 "<text>, <ZhaiyaoGeshi>, <think_nya~>" -> ['text', 'ZhaiyaoGeshi', 'think_nya~']
  * @param {string} tagsStr 
  * @returns {string[]}
  */
@@ -185,11 +186,15 @@ function parseConfiguredTags(tagsStr) {
     if (!tagsStr || typeof tagsStr !== 'string') return [];
     const parts = tagsStr.split(/[,;\s\n\r，；]+/);
     const tags = [];
+    const seenLower = new Set();
     for (let p of parts) {
-        const clean = p.replace(/^[<</]+|[>]+$/g, '').trim().toLowerCase();
-        if (clean && /^[a-zA-Z0-9_\-:]+$/.test(clean)) {
-            if (!tags.includes(clean)) {
-                tags.push(clean);
+        const clean = p.replace(/^[<</]+|[>]+$/g, '').trim();
+        const lower = clean.toLowerCase();
+        // 放宽字符集：支持字母、数字、下划线、短横线、冒号、波浪号、点号
+        if (clean && /^[a-zA-Z0-9_\-:~.]+$/.test(clean)) {
+            if (!seenLower.has(lower)) {
+                seenLower.add(lower);
+                tags.push(clean); // 保留用户输入的原始大小写
             }
         }
     }
@@ -239,6 +244,33 @@ function getMessageRawText(mesElement) {
 }
 
 /**
+ * 从消息文本中剥离被忽略的标签块（如各种思考链、草稿）以及 Markdown 代码块
+ * @param {string} text 
+ * @param {string[]} ignoreTags 
+ * @returns {string}
+ */
+function stripIgnoredBlocks(text, ignoreTags) {
+    if (!text || typeof text !== 'string') return '';
+    let result = text;
+
+    // 1. 过滤 Markdown 代码块与行内代码，防止代码示例中的标签干扰
+    result = result.replace(/```[\s\S]*?```/g, ' ');
+    result = result.replace(/`[^`\n]*`/g, ' ');
+
+    // 2. 过滤配置的忽略标签及其包裹内容（支持带属性及闭合标签后带空格，如 </think >）
+    if (Array.isArray(ignoreTags) && ignoreTags.length > 0) {
+        for (const it of ignoreTags) {
+            const escaped = it.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            // 成对闭合的情况（支持标签属性与闭合空格）
+            const pairRegex = new RegExp(`<${escaped}(?:\\s+[^>]*)?>[\\s\\S]*?<\\/${escaped}\\s*>`, 'gi');
+            result = result.replace(pairRegex, ' ');
+        }
+    }
+
+    return result;
+}
+
+/**
  * 检查指定楼层的标签完整性
  * @param {HTMLElement} mesElement 
  * @param {object} settings 
@@ -259,69 +291,95 @@ function checkMessageTags(mesElement, settings) {
     }
 
     const rawText = getMessageRawText(mesElement);
+
+    // 1. 提取忽略标签并剥离思考链与代码块（区分 undefined 与用户主动留空）
+    const ignoreTagsStr = settings.ignoreTags !== undefined ? settings.ignoreTags : defaultSettings.ignoreTags;
+    const ignoreTags = parseConfiguredTags(ignoreTagsStr);
+    const checkableText = stripIgnoredBlocks(rawText, ignoreTags);
+
     const mode = settings.tagCheckMode || 'required';
     const errors = [];
-
     const escapeRegex = (s) => s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 
     for (const t of configuredTags) {
         const escaped = escapeRegex(t);
 
-        // 检测末尾截断（例如以 `<text` 或 `</text` 结尾但未闭合 `>`）
-        const tailIncomplete = new RegExp(`<\/?${escaped}(?:\\s+[^>]*)?$`, 'i').test(rawText) && !rawText.trimEnd().endsWith('>');
+        // 查找是否存在成对闭合且中间有实质内容的标签（不区分大小写匹配）
+        // match[1] 为匹配到的标签名，match[2] 为标签包裹的内容
+        const pairRegex = new RegExp(`<(${escaped})(?:\\s+[^>]*)?>([\\s\\S]*?)<\\/\\1\\s*>`, 'gi');
+        let pairMatch;
+        let hasValidPairWithContent = false;
+        let hasEmptyPair = false;
 
-        let openCount = 0;
-        let closeCount = 0;
-        let orderError = false;
-
-        const regex = new RegExp(`(<\\/?)(${escaped})(\\s+[^>]*)?(\\/?>)`, 'gi');
-        let match;
-        while ((match = regex.exec(rawText)) !== null) {
-            const isClosing = match[1] === '</';
-            const isSelfClosing = match[4] === '/>';
-
-            if (isSelfClosing) {
-                openCount++;
-                closeCount++;
-            } else if (isClosing) {
-                closeCount++;
-                if (closeCount > openCount) {
-                    orderError = true;
-                }
+        while ((pairMatch = pairRegex.exec(checkableText)) !== null) {
+            const innerContent = (pairMatch[2] || '').trim();
+            if (innerContent.length > 0) {
+                hasValidPairWithContent = true;
+                break; // 只要有一处成对且中间有文字，即判定通过！
             } else {
-                openCount++;
+                hasEmptyPair = true;
             }
         }
 
+        // 检测末尾截断（例如流式被截断为 `<tag` 或 `</tag` 未闭合 `>`）
+        const tailIncomplete = new RegExp(`<\/?${escaped}(?:\\s+[^>]*)?$`, 'i').test(checkableText) && !checkableText.trimEnd().endsWith('>');
+
+        // 扫描该标签所有出现点（用于在未找到有效闭合时分析具体错误原因）
+        const allMatchRegex = new RegExp(`(<\\/?)(${escaped})(\\s+[^>]*)?(\\/?>)`, 'gi');
+        let allMatches = [];
+        let m;
+        while ((m = allMatchRegex.exec(checkableText)) !== null) {
+            allMatches.push({
+                isClosing: m[1] === '</',
+                isSelfClosing: m[4] === '/>',
+            });
+        }
+
+        const openCount = allMatches.filter(item => !item.isClosing).length;
+        const closeCount = allMatches.filter(item => item.isClosing || item.isSelfClosing).length;
+
         if (mode === 'required') {
-            // 模式 B：强制必填（必须包含且成对完整）
-            if (openCount === 0 && closeCount === 0 && !tailIncomplete) {
-                errors.push({ tag: t, type: 'missing_all', msg: `缺少 <${t}> 标签` });
-            } else if (tailIncomplete) {
+            // 模式 B：强制必填（必须包含至少一对且内容非空）
+            if (hasValidPairWithContent && !tailIncomplete) {
+                // 通过！有效成对且有实质内容
+                continue;
+            }
+
+            if (tailIncomplete) {
                 errors.push({ tag: t, type: 'tail_incomplete', msg: `<${t}> 标签末尾被截断/未闭合` });
-            } else if (openCount > closeCount) {
-                const diff = openCount - closeCount;
-                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` + (diff > 1 ? ` (${diff}处)` : '') });
-            } else if (openCount < closeCount) {
-                const diff = closeCount - openCount;
-                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` + (diff > 1 ? ` (${diff}处)` : '') });
-            } else if (orderError) {
-                errors.push({ tag: t, type: 'order_error', msg: `<${t}> 标签闭合顺序颠倒` });
+            } else if (hasEmptyPair && !hasValidPairWithContent) {
+                errors.push({ tag: t, type: 'empty_content', msg: `<${t}> 标签内容为空` });
+            } else if (openCount === 0 && closeCount === 0) {
+                errors.push({ tag: t, type: 'missing_all', msg: `缺少 <${t}> 标签` });
+            } else if (openCount > 0 && closeCount === 0) {
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` });
+            } else if (openCount === 0 && closeCount > 0) {
+                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` });
+            } else {
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少有效 </${t}> 闭合内容` });
             }
         } else {
-            // 模式 A：出现即闭合（若未出现则不强制报错）
+            // 模式 A：成对闭合（若未出现该标签则不报错；若出现则必须有效闭合）
             if (openCount === 0 && closeCount === 0 && !tailIncomplete) {
-                // 未出现此标签，正常
-            } else if (tailIncomplete) {
+                // 未出现此标签，正常放行
+                continue;
+            }
+
+            if (hasValidPairWithContent && !tailIncomplete) {
+                // 出现了且成对有效，放行
+                continue;
+            }
+
+            if (tailIncomplete) {
                 errors.push({ tag: t, type: 'tail_incomplete', msg: `<${t}> 标签末尾被截断/未闭合` });
-            } else if (openCount > closeCount) {
-                const diff = openCount - closeCount;
-                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` + (diff > 1 ? ` (${diff}处)` : '') });
-            } else if (openCount < closeCount) {
-                const diff = closeCount - openCount;
-                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` + (diff > 1 ? ` (${diff}处)` : '') });
-            } else if (orderError) {
-                errors.push({ tag: t, type: 'order_error', msg: `<${t}> 标签闭合顺序颠倒` });
+            } else if (hasEmptyPair && !hasValidPairWithContent) {
+                errors.push({ tag: t, type: 'empty_content', msg: `<${t}> 标签内容为空` });
+            } else if (openCount > 0 && closeCount === 0) {
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少 </${t}> 闭合标签` });
+            } else if (openCount === 0 && closeCount > 0) {
+                errors.push({ tag: t, type: 'missing_open', msg: `缺少 <${t}> 开始标签` });
+            } else {
+                errors.push({ tag: t, type: 'missing_close', msg: `缺少有效 </${t}> 闭合内容` });
             }
         }
     }
@@ -330,7 +388,7 @@ function checkMessageTags(mesElement, settings) {
         return { hasError: false, errors: [], summaryText: '', detailText: '' };
     }
 
-    // 生成紧凑简报
+    // 生成紧凑简报（保持用户原样大小写）
     let summaryText = '';
     if (errors.length === 1) {
         summaryText = errors[0].msg;
@@ -1029,6 +1087,7 @@ function syncSettingsToUI() {
     // 标签检查配置同步
     $('#st_floor_enable_tag_check').prop('checked', settings.enableTagCheck ?? true);
     $('#st_floor_check_tags').val(settings.checkTags || '<text>');
+    $('#st_floor_ignore_tags').val(settings.ignoreTags !== undefined ? settings.ignoreTags : defaultSettings.ignoreTags);
     $('#st_floor_tag_check_mode').val(settings.tagCheckMode || 'required');
     $('#st_floor_tag_check_only_ai').prop('checked', settings.tagCheckOnlyAi ?? true);
 
@@ -1135,6 +1194,14 @@ async function setupSettings() {
         // 9. 检查标签列表输入框
         $('#st_floor_check_tags').off('input change').on('input change', function () {
             activeSettings.checkTags = $(this).val();
+            persistSettings(false);
+            refreshAllCollapses(true);
+            if (isPanelOpen) renderFloorList();
+        });
+
+        // 9.1 跳过检查的思考/草稿标签输入框
+        $('#st_floor_ignore_tags').off('input change').on('input change', function () {
+            activeSettings.ignoreTags = $(this).val();
             persistSettings(false);
             refreshAllCollapses(true);
             if (isPanelOpen) renderFloorList();
